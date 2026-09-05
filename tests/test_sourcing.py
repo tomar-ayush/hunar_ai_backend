@@ -70,25 +70,20 @@ def test_full_sourcing_flow(client: TestClient):
          patch("app.jobs.router.PeopleSearchClient") as MockSearch:
 
         mock_llm_inst = MockLLM.return_value
-        mock_llm_inst.extract_filters_from_jd = MagicMock(
+        mock_llm_inst.extract_filters_from_jd = AsyncMock(
             return_value={
                 "targetTitle": "Backend Engineer",
                 "skills": ["Python", "FastAPI"],
                 "location": "Remote",
             }
         )
-        # Make it awaitable
-        import asyncio
-        mock_llm_inst.extract_filters_from_jd = lambda *a, **k: asyncio.coroutine(
-            lambda: {"targetTitle": "Backend Engineer", "skills": ["Python", "FastAPI"], "location": "Remote"}
-        )()
 
         mock_search_inst = MockSearch.return_value
-        mock_search_inst.search_candidates = lambda *a, **k: asyncio.coroutine(
-            lambda: [
+        mock_search_inst.search_candidates = AsyncMock(
+            return_value=[
                 {"name": "Priya Sharma", "email": "priya@example.com", "phone": "+91-9876543210"}
             ]
-        )()
+        )
 
         resp_source = client.post(f"/jobs/{job_id}/source")
         assert resp_source.status_code == 200, resp_source.text
