@@ -8,8 +8,6 @@ import csv
 import io
 
 from app.database import get_session
-from app.auth.service import get_current_user
-from app.auth.model import User
 from app.jobs.model import Job
 from app.jobs.schema import JobCreate, JobRead, JobUpdate
 from app.candidates.model import Candidate
@@ -27,17 +25,15 @@ class ApprovedCandidates(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Job CRUD
+# Job CRUD (No Authentication Required)
 # ──────────────────────────────────────────────
 
 @router.post("", response_model=JobRead)
 def create_job(
     job: JobCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     db_job = Job.model_validate(job)
-    db_job.company_id = current_user.company_id
     session.add(db_job)
     session.commit()
     session.refresh(db_job)
@@ -47,11 +43,8 @@ def create_job(
 @router.get("", response_model=List[JobRead])
 def get_jobs(
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
-    jobs = session.exec(
-        select(Job).where(Job.company_id == current_user.company_id)
-    ).all()
+    jobs = session.exec(select(Job)).all()
     return jobs
 
 
@@ -59,10 +52,9 @@ def get_jobs(
 def get_job(
     id: uuid.UUID,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
@@ -72,10 +64,9 @@ def update_job(
     id: uuid.UUID,
     job: JobUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     db_job = session.get(Job, id)
-    if not db_job or db_job.company_id != current_user.company_id:
+    if not db_job:
         raise HTTPException(status_code=404, detail="Job not found")
     job_data = job.model_dump(exclude_unset=True)
     for key, value in job_data.items():
@@ -95,10 +86,9 @@ def add_candidate(
     id: uuid.UUID,
     candidate: CandidateCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     db_candidate = Candidate.model_validate(candidate)
     db_candidate.job_id = id
@@ -113,11 +103,10 @@ async def upload_candidates_csv(
     id: uuid.UUID,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     """Upload candidates via CSV. Expected columns: name, phone, email"""
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     content = await file.read()
@@ -151,10 +140,9 @@ def list_candidates(
     id: uuid.UUID,
     source: Optional[str] = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     query = select(Candidate).where(Candidate.job_id == id)
     if source:
@@ -171,7 +159,6 @@ def list_candidates(
 async def source_candidates(
     id: uuid.UUID,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     """
     1. Use LLM to extract search filters from the JD text.
@@ -179,7 +166,7 @@ async def source_candidates(
     3. Return a preview list for user approval.
     """
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     llm_client = LLMClient()
@@ -200,10 +187,9 @@ def approve_candidates(
     id: uuid.UUID,
     data: ApprovedCandidates,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     approved = []
@@ -231,10 +217,9 @@ def get_dashboard(
     status_filter: Optional[str] = None,
     source_filter: Optional[str] = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
 ):
     job = session.get(Job, id)
-    if not job or job.company_id != current_user.company_id:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     # Build candidate query with optional filters
@@ -245,7 +230,6 @@ def get_dashboard(
 
     dashboard_data = []
     for cand in candidates:
-        # Get call session
         call = session.exec(
             select(CallSession).where(CallSession.candidate_id == cand.id)
         ).first()
@@ -254,11 +238,9 @@ def get_dashboard(
         score_data = None
 
         if call:
-            # Optionally filter by call status
             if status_filter and call.status != status_filter:
                 continue
 
-            # Get answers for this call session
             answers = session.exec(
                 select(Answer).where(Answer.call_session_id == call.id)
             ).all()
@@ -271,7 +253,6 @@ def get_dashboard(
                 for a in answers
             ]
 
-            # Get score
             score = session.exec(
                 select(Score).where(Score.call_session_id == call.id)
             ).first()

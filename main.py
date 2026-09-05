@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth.router import router as auth_router
 from app.jobs.router import router as job_router
 from app.candidates.router import router as candidate_router
 from app.webhooks.router import router as webhooks_router
+from app.agents.router import router as agent_router
 
 
 # ── Structured Logging ──
@@ -68,10 +68,10 @@ app.add_middleware(RequestIDMiddleware)
 
 
 # ── Routers ──
-app.include_router(auth_router)
 app.include_router(job_router)
 app.include_router(candidate_router)
 app.include_router(webhooks_router)
+app.include_router(agent_router)
 
 
 @app.get("/", tags=["Health"])

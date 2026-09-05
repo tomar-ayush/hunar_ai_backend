@@ -1,10 +1,12 @@
+import json
 import pytest
+import time
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from app.calls.model import CallSession
 from app.database import get_session
-from app.auth.service import get_current_user
-from app.auth.model import User
+from app.voice.service import compute_hunar_signature
+from app.config import settings
 import uuid
 from unittest.mock import patch
 
@@ -29,27 +31,33 @@ def client_fixture():
     SQLModel.metadata.drop_all(engine)
 
 
-def test_webhook_idempotency(client: TestClient):
-    """Verify that the webhook endpoint is idempotent by external_call_id."""
-    ext_id = f"test-ext-{uuid.uuid4().hex[:8]}"
+def test_hunar_webhook_idempotency(client: TestClient):
+    """Verify that Hunar webhook payload with call_id is processed and idempotent."""
+    call_id = f"hunar-call-{uuid.uuid4().hex[:8]}"
 
     # Insert a mock CallSession in in_progress state
     with Session(engine) as session:
         call = CallSession(
             candidate_id=uuid.uuid4(),
             status="in_progress",
-            external_call_id=ext_id,
+            external_call_id=call_id,
         )
         session.add(call)
         session.commit()
         session.refresh(call)
 
+    # Official Hunar call_summary webhook payload
     payload = {
-        "external_call_id": ext_id,
-        "status": "completed",
-        "transcript": [{"speaker": "AI", "text": "Hello"}, {"speaker": "Candidate", "text": "Hi"}],
-        "recording_url": "https://example.com/rec.mp3",
-        "duration": 180,
+        "event_type": "call_summary",
+        "call_id": call_id,
+        "status": "COMPLETED",
+        "duration_seconds": 195.5,
+        "recording_url": "https://recordings.hunar.ai/test-call.mp3",
+        "result": {
+            "interested": True,
+            "qualified": True,
+            "summary": "Candidate passed the initial screening.",
+        },
     }
 
     with patch("app.webhooks.router.extract_transcript") as mock_task:
@@ -60,19 +68,79 @@ def test_webhook_idempotency(client: TestClient):
         assert resp1.status_code == 200
         assert resp1.json()["status"] == "success"
 
-        # Second call should be ignored (idempotent)
+        # Second call should be ignored due to idempotency
         resp2 = client.post("/webhooks/voice-call", json=payload)
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "ignored"
         assert resp2.json()["detail"] == "already processed"
 
 
-def test_webhook_unknown_call_id(client: TestClient):
-    """Webhook should ignore payloads with unknown external_call_id."""
+def test_hunar_webhook_signature_validation(client: TestClient):
+    """Verify that Hunar webhook signature validates using HUNAR_API_KEY (no webhook secret needed)."""
+    call_id = f"hunar-call-{uuid.uuid4().hex[:8]}"
+    test_api_key = "hunar_test_api_key_12345"
+
+    with Session(engine) as session:
+        call = CallSession(
+            candidate_id=uuid.uuid4(),
+            status="in_progress",
+            external_call_id=call_id,
+        )
+        session.add(call)
+        session.commit()
+
     payload = {
-        "external_call_id": "nonexistent-id",
-        "status": "completed",
-        "transcript": [],
+        "event_type": "call_summary",
+        "call_id": call_id,
+        "status": "COMPLETED",
+        "duration_seconds": 120.0,
+    }
+    raw_body = json.dumps(payload).encode("utf-8")
+    timestamp = str(int(time.time()))
+
+    # Compute valid signature using the API key
+    valid_sig = compute_hunar_signature(
+        api_key=test_api_key,
+        request_body=raw_body,
+        timestamp=timestamp,
+    )
+
+    with patch.object(settings, "HUNAR_API_KEY", test_api_key):
+        with patch("app.webhooks.router.extract_transcript") as mock_task:
+            mock_task.delay = lambda *a, **k: None
+
+            # Request with valid signature should succeed
+            resp = client.post(
+                "/webhooks/voice-call",
+                content=raw_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hunar-Signature": valid_sig,
+                    "X-Hunar-Timestamp": timestamp,
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "success"
+
+            # Request with tampered signature should be rejected with 401
+            bad_resp = client.post(
+                "/webhooks/voice-call",
+                content=raw_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hunar-Signature": "invalid_base64_sig==",
+                    "X-Hunar-Timestamp": timestamp,
+                },
+            )
+            assert bad_resp.status_code == 401
+
+
+def test_webhook_unknown_call_id(client: TestClient):
+    """Webhook should ignore payloads with an unknown call_id."""
+    payload = {
+        "event_type": "call_summary",
+        "call_id": "nonexistent-call-uuid",
+        "status": "COMPLETED",
     }
     resp = client.post("/webhooks/voice-call", json=payload)
     assert resp.status_code == 200

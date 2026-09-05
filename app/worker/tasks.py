@@ -21,8 +21,8 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
 
     Flow:
     1. Load candidate + job from DB
-    2. Build the screening script from the Job's questions
-    3. Call Hunar.AI Voice API
+    2. Build custom_data & resolve agent
+    3. Call Hunar.AI Voice API (POST /external/v1/calls/)
     4. Store the external_call_id, set status=in_progress
     """
     with Session(engine) as session:
@@ -31,18 +31,20 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
             logger.error(f"Candidate {candidate_id} not found")
             return None
 
-        # Load the job to get the screening script
+        # Load the job to get context & custom data
         job = session.get(Job, candidate.job_id)
         if not job:
             logger.error(f"Job {candidate.job_id} not found for candidate {candidate_id}")
             return None
 
-        # Build the script payload from the job
         script_data = job.script or {}
-        script = {
-            "questions": script_data.get("questions", job.pass_criteria.split(". ") if job.pass_criteria else []),
-            "opening_line": script_data.get("opening_line", f"Hello {candidate.name}, I'm calling regarding the {job.title} position."),
+        custom_data = {
+            "job_role": job.title,
+            "company": "Recruiter Portal",
+            "candidate_name": candidate.name,
         }
+        if isinstance(script_data.get("custom_data"), dict):
+            custom_data.update(script_data["custom_data"])
 
         voice_client = VoiceAIClient()
 
@@ -51,12 +53,12 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
                 voice_client.trigger_outbound_call(
                     candidate_phone=candidate.phone,
                     candidate_name=candidate.name,
-                    script=script,
+                    custom_data=custom_data,
+                    request_id=str(candidate.id),
                 )
             )
         except Exception as e:
             logger.error(f"Failed to trigger call for {candidate_id}: {e}")
-            # Create a failed session
             call_session = CallSession(
                 candidate_id=candidate.id,
                 status="failed",
@@ -75,21 +77,20 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
         session.add(call_session)
         session.commit()
 
-        logger.info(f"Call triggered: candidate={candidate_id}, external_id={external_call_id}")
+        logger.info(f"Hunar call created: candidate={candidate_id}, external_id={external_call_id}")
         return external_call_id
 
 
 @celery_app.task(name="tasks.extract_transcript", bind=True, max_retries=3)
 def extract_transcript(self, call_session_id: str) -> bool:
     """
-    Celery task: Extract answers + score from a completed call transcript.
+    Celery task: Extract answers + score from a completed call transcript or Hunar result.
 
     Flow:
-    1. Load the CallSession (which now has the transcript from the webhook)
+    1. Load the CallSession (which has the transcript/results from the webhook)
     2. Load the Job to get the screening questions and pass criteria
-    3. Call Gemini LLM to extract answers
-    4. Call Gemini LLM to score the transcript
-    5. Write Answer + Score records, set status=completed
+    3. Call Gemini LLM to extract answers and score
+    4. Write Answer + Score records, set status=completed
     """
     with Session(engine) as session:
         call_session = session.get(CallSession, call_session_id)
@@ -97,7 +98,6 @@ def extract_transcript(self, call_session_id: str) -> bool:
             logger.error(f"CallSession {call_session_id} not found")
             return False
 
-        # Get the candidate to find the job
         candidate = session.get(Candidate, call_session.candidate_id)
         if not candidate:
             logger.error(f"Candidate {call_session.candidate_id} not found")
@@ -108,20 +108,19 @@ def extract_transcript(self, call_session_id: str) -> bool:
             logger.error(f"Job {candidate.job_id} not found")
             return False
 
-        # Parse the transcript — Hunar typically sends a list of messages
-        transcript = call_session.transcript
-        if isinstance(transcript, dict):
-            # Handle different transcript formats from Hunar
-            transcript_messages = transcript.get("messages", [])
-            if not transcript_messages:
-                # Try to convert the dict itself to a list
-                transcript_messages = [transcript]
-        elif isinstance(transcript, list):
-            transcript_messages = transcript
+        # Format transcript data for LLM analysis
+        transcript_raw = call_session.transcript
+        if isinstance(transcript_raw, dict):
+            # Check if Hunar sent a structured result dict
+            messages = []
+            for k, v in transcript_raw.items():
+                messages.append({"speaker": k, "text": str(v)})
+            transcript_messages = messages
+        elif isinstance(transcript_raw, list):
+            transcript_messages = transcript_raw
         else:
-            transcript_messages = []
+            transcript_messages = [{"speaker": "Call", "text": str(transcript_raw or "")}]
 
-        # Get the screening questions from the job
         script_data = job.script or {}
         questions = script_data.get("questions", [])
         if not questions and job.pass_criteria:
@@ -132,12 +131,9 @@ def extract_transcript(self, call_session_id: str) -> bool:
         llm_client = LLMClient()
 
         try:
-            # Extract answers from transcript
             answers = asyncio.run(
                 llm_client.extract_answers_from_transcript(transcript_messages, questions)
             )
-
-            # Score the transcript
             score_data = asyncio.run(
                 llm_client.score_transcript(transcript_messages, pass_criteria)
             )
@@ -145,7 +141,7 @@ def extract_transcript(self, call_session_id: str) -> bool:
             logger.error(f"LLM extraction failed for session {call_session_id}: {e}")
             raise self.retry(exc=e, countdown=60)
 
-        # Write Answer records
+        # Save answers
         for ans in answers:
             answer_record = Answer(
                 call_session_id=call_session.id,
@@ -155,7 +151,7 @@ def extract_transcript(self, call_session_id: str) -> bool:
             )
             session.add(answer_record)
 
-        # Write Score record
+        # Save score
         score_record = Score(
             call_session_id=call_session.id,
             score=int(score_data.get("score", 0)),
@@ -163,7 +159,6 @@ def extract_transcript(self, call_session_id: str) -> bool:
         )
         session.add(score_record)
 
-        # Mark session as completed
         call_session.status = "completed"
         session.add(call_session)
         session.commit()

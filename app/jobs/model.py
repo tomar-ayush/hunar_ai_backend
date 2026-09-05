@@ -1,11 +1,11 @@
 from sqlmodel import SQLModel, Field, JSON, Column
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class Job(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    company_id: UUID = Field(index=True)
+    company_id: Optional[UUID] = Field(default=None, index=True)
     title: str
     jd_text: str
     script: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
