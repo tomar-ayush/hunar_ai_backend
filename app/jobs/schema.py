@@ -1,15 +1,17 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 class JobCreate(BaseModel):
     title: str
     jd_text: str
-    script: Dict[str, Any] = {}
-    pass_criteria: str = ""
+    target_seniority_level: Optional[str] = None
+    target_location: Optional[str] = None
+    experience_required: Optional[str] = None
+    required_skills: Optional[List[str]] = Field(default_factory=list)
+    script: Optional[Dict[str, Any]] = Field(default_factory=dict)
     sourcing_mode: str = "auto"
-    company_id: Optional[UUID] = None
 
 class JobRead(JobCreate):
     id: UUID
@@ -18,7 +20,9 @@ class JobRead(JobCreate):
 class JobUpdate(BaseModel):
     title: Optional[str] = None
     jd_text: Optional[str] = None
+    target_seniority_level: Optional[str] = None
+    target_location: Optional[str] = None
+    experience_required: Optional[str] = None
+    required_skills: Optional[List[str]] = None
     script: Optional[Dict[str, Any]] = None
-    pass_criteria: Optional[str] = None
     sourcing_mode: Optional[str] = None
-    company_id: Optional[UUID] = None

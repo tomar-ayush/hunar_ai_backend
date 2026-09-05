@@ -172,14 +172,27 @@ async def source_candidates(
     llm_client = LLMClient()
     filters = await llm_client.extract_filters_from_jd(job.jd_text or "")
 
+    # Merge explicitly specified job attributes if provided
+    search_title = filters.get("targetTitle") or job.title
+    search_skills = list(set(filters.get("skills", []) + (job.required_skills or [])))
+    search_location = job.target_location or filters.get("location", "")
+
+    filters_used = {
+        "targetTitle": search_title,
+        "skills": search_skills,
+        "location": search_location,
+        "seniority": job.target_seniority_level,
+        "experience": job.experience_required,
+    }
+
     search_client = PeopleSearchClient()
     preview_list = await search_client.search_candidates(
-        title=filters.get("targetTitle", ""),
-        skills=filters.get("skills", []),
-        location=filters.get("location", ""),
+        title=search_title,
+        skills=search_skills,
+        location=search_location,
     )
 
-    return {"filters_used": filters, "preview": preview_list}
+    return {"filters_used": filters_used, "preview": preview_list}
 
 
 @router.post("/{id}/candidates/approve")

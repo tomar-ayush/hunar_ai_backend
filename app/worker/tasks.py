@@ -123,10 +123,14 @@ def extract_transcript(self, call_session_id: str) -> bool:
 
         script_data = job.script or {}
         questions = script_data.get("questions", [])
-        if not questions and job.pass_criteria:
-            questions = [job.pass_criteria]
 
-        pass_criteria = job.pass_criteria or "General fitness for the role"
+        skills_str = ", ".join(job.required_skills) if isinstance(job.required_skills, list) else str(job.required_skills or "")
+        scoring_criteria = (
+            f"Role: {job.title}. "
+            f"Seniority: {job.target_seniority_level or 'Not specified'}. "
+            f"Experience Required: {job.experience_required or 'Not specified'}. "
+            f"Required Skills: {skills_str or 'General competency'}."
+        )
 
         llm_client = LLMClient()
 
@@ -135,7 +139,7 @@ def extract_transcript(self, call_session_id: str) -> bool:
                 llm_client.extract_answers_from_transcript(transcript_messages, questions)
             )
             score_data = asyncio.run(
-                llm_client.score_transcript(transcript_messages, pass_criteria)
+                llm_client.score_transcript(transcript_messages, scoring_criteria)
             )
         except Exception as e:
             logger.error(f"LLM extraction failed for session {call_session_id}: {e}")
