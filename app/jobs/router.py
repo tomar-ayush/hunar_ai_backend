@@ -1,48 +1,81 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlmodel import Session, select
 from pydantic import BaseModel
 import uuid
+import csv
+import io
 
 from app.database import get_session
 from app.auth.service import get_current_user
+from app.auth.model import User
 from app.jobs.model import Job
 from app.jobs.schema import JobCreate, JobRead, JobUpdate
 from app.candidates.model import Candidate
 from app.candidates.schema import CandidateCreate, CandidateRead
-from app.calls.model import CallSession
+from app.calls.model import CallSession, Answer, Score
 from app.llm.service import LLMClient
 from app.people_search.service import PeopleSearchClient
 
-router = APIRouter(prefix="/jobs", dependencies=[Depends(get_current_user)])
+
+router = APIRouter(prefix="/jobs", tags=["Jobs"])
+
 
 class ApprovedCandidates(BaseModel):
     candidates: List[CandidateCreate]
 
+
+# ──────────────────────────────────────────────
+# Job CRUD
+# ──────────────────────────────────────────────
+
 @router.post("", response_model=JobRead)
-def create_job(job: JobCreate, session: Session = Depends(get_session)):
+def create_job(
+    job: JobCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     db_job = Job.model_validate(job)
+    db_job.company_id = current_user.company_id
     session.add(db_job)
     session.commit()
     session.refresh(db_job)
     return db_job
 
+
 @router.get("", response_model=List[JobRead])
-def get_jobs(session: Session = Depends(get_session)):
-    jobs = session.exec(select(Job)).all()
+def get_jobs(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    jobs = session.exec(
+        select(Job).where(Job.company_id == current_user.company_id)
+    ).all()
     return jobs
 
+
 @router.get("/{id}", response_model=JobRead)
-def get_job(id: uuid.UUID, session: Session = Depends(get_session)):
+def get_job(
+    id: uuid.UUID,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
+
 @router.patch("/{id}", response_model=JobRead)
-def update_job(id: uuid.UUID, job: JobUpdate, session: Session = Depends(get_session)):
+def update_job(
+    id: uuid.UUID,
+    job: JobUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     db_job = session.get(Job, id)
-    if not db_job:
+    if not db_job or db_job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
     job_data = job.model_dump(exclude_unset=True)
     for key, value in job_data.items():
@@ -52,10 +85,20 @@ def update_job(id: uuid.UUID, job: JobUpdate, session: Session = Depends(get_ses
     session.refresh(db_job)
     return db_job
 
+
+# ──────────────────────────────────────────────
+# Candidate management
+# ──────────────────────────────────────────────
+
 @router.post("/{id}/candidates", response_model=CandidateRead)
-def add_candidate(id: uuid.UUID, candidate: CandidateCreate, session: Session = Depends(get_session)):
+def add_candidate(
+    id: uuid.UUID,
+    candidate: CandidateCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
     db_candidate = Candidate.model_validate(candidate)
     db_candidate.job_id = id
@@ -64,68 +107,197 @@ def add_candidate(id: uuid.UUID, candidate: CandidateCreate, session: Session = 
     session.refresh(db_candidate)
     return db_candidate
 
-@router.get("/{id}/candidates", response_model=List[CandidateRead])
-def list_candidates(id: uuid.UUID, session: Session = Depends(get_session)):
+
+@router.post("/{id}/candidates/csv", response_model=dict)
+async def upload_candidates_csv(
+    id: uuid.UUID,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload candidates via CSV. Expected columns: name, phone, email"""
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    candidates = session.exec(select(Candidate).where(Candidate.job_id == id)).all()
+
+    content = await file.read()
+    text = content.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+
+    count = 0
+    for row in reader:
+        name = row.get("name", "").strip()
+        phone = row.get("phone", "").strip()
+        email = row.get("email", "").strip()
+        if not name or not phone:
+            continue
+        candidate = Candidate(
+            job_id=id,
+            name=name,
+            phone=phone,
+            email=email,
+            source="manual_upload",
+            consent_status="pending",
+        )
+        session.add(candidate)
+        count += 1
+
+    session.commit()
+    return {"status": "success", "imported": count}
+
+
+@router.get("/{id}/candidates", response_model=List[CandidateRead])
+def list_candidates(
+    id: uuid.UUID,
+    source: Optional[str] = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    job = session.get(Job, id)
+    if not job or job.company_id != current_user.company_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    query = select(Candidate).where(Candidate.job_id == id)
+    if source:
+        query = query.where(Candidate.source == source)
+    candidates = session.exec(query).all()
     return candidates
 
+
+# ──────────────────────────────────────────────
+# Sourcing (Apollo.IO integration)
+# ──────────────────────────────────────────────
+
 @router.post("/{id}/source")
-def source_candidates(id: uuid.UUID, session: Session = Depends(get_session)):
+async def source_candidates(
+    id: uuid.UUID,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    1. Use LLM to extract search filters from the JD text.
+    2. Query Apollo.IO People Search API with those filters.
+    3. Return a preview list for user approval.
+    """
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     llm_client = LLMClient()
-    jd = job.jd_text or ""
-    filters = llm_client.extract_filters_from_jd(jd)
-    
+    filters = await llm_client.extract_filters_from_jd(job.jd_text or "")
+
     search_client = PeopleSearchClient()
-    preview_list = search_client.search_candidates(
+    preview_list = await search_client.search_candidates(
         title=filters.get("targetTitle", ""),
         skills=filters.get("skills", []),
-        location=filters.get("location", "")
+        location=filters.get("location", ""),
     )
-    
-    return {"preview": preview_list}
+
+    return {"filters_used": filters, "preview": preview_list}
+
 
 @router.post("/{id}/candidates/approve")
-def approve_candidates(id: uuid.UUID, data: ApprovedCandidates, session: Session = Depends(get_session)):
+def approve_candidates(
+    id: uuid.UUID,
+    data: ApprovedCandidates,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     approved = []
     for cand in data.candidates:
         db_cand = Candidate.model_validate(cand)
         db_cand.job_id = id
+        db_cand.source = "people_search_api"
         session.add(db_cand)
         approved.append(db_cand)
     session.commit()
-    
+
     for cand in approved:
         session.refresh(cand)
-        
+
     return {"status": "success", "count": len(approved)}
 
+
+# ──────────────────────────────────────────────
+# Dashboard (aggregated view)
+# ──────────────────────────────────────────────
+
 @router.get("/{id}/dashboard")
-def get_dashboard(id: uuid.UUID, session: Session = Depends(get_session)):
+def get_dashboard(
+    id: uuid.UUID,
+    status_filter: Optional[str] = None,
+    source_filter: Optional[str] = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
     job = session.get(Job, id)
-    if not job:
+    if not job or job.company_id != current_user.company_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    candidates = session.exec(select(Candidate).where(Candidate.job_id == id)).all()
-    
+
+    # Build candidate query with optional filters
+    query = select(Candidate).where(Candidate.job_id == id)
+    if source_filter:
+        query = query.where(Candidate.source == source_filter)
+    candidates = session.exec(query).all()
+
     dashboard_data = []
     for cand in candidates:
-        session_data = session.exec(select(CallSession).where(CallSession.candidate_id == cand.id)).first()
-        dashboard_data.append({
-            "candidate": cand,
-            "call_status": session_data.status if session_data else "Not Called",
-            "answers": None,
-            "score": None
-        })
-        
-    return {"dashboard": dashboard_data}
+        # Get call session
+        call = session.exec(
+            select(CallSession).where(CallSession.candidate_id == cand.id)
+        ).first()
+
+        answers_data = []
+        score_data = None
+
+        if call:
+            # Optionally filter by call status
+            if status_filter and call.status != status_filter:
+                continue
+
+            # Get answers for this call session
+            answers = session.exec(
+                select(Answer).where(Answer.call_session_id == call.id)
+            ).all()
+            answers_data = [
+                {
+                    "question": a.question,
+                    "extracted_answer": a.extracted_answer,
+                    "confidence": a.confidence,
+                }
+                for a in answers
+            ]
+
+            # Get score
+            score = session.exec(
+                select(Score).where(Score.call_session_id == call.id)
+            ).first()
+            if score:
+                score_data = {"score": score.score, "reasoning": score.reasoning}
+
+        dashboard_data.append(
+            {
+                "candidate": {
+                    "id": str(cand.id),
+                    "name": cand.name,
+                    "phone": cand.phone,
+                    "email": cand.email,
+                    "source": cand.source,
+                    "consent_status": cand.consent_status,
+                },
+                "call_status": call.status if call else "not_called",
+                "duration": call.duration if call else 0,
+                "recording_url": call.recording_url if call else None,
+                "answers": answers_data,
+                "score": score_data,
+            }
+        )
+
+    return {
+        "job": {"id": str(job.id), "title": job.title},
+        "total_candidates": len(candidates),
+        "dashboard": dashboard_data,
+    }
