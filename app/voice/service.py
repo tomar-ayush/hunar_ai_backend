@@ -1,63 +1,10 @@
-import base64
-import hashlib
-import hmac
 import httpx
 import logging
-from typing import Dict, Any, List, Optional, Iterable
+from typing import Dict, Any, List, Optional
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-
-def compute_hunar_signature(
-    *, api_key: str, request_body: bytes, timestamp: str
-) -> str:
-    """
-    Computes base64-encoded HMAC-SHA256 signature matching Hunar's official specification:
-    message = f"{timestamp.strip()}.".encode("utf-8") + request_body
-    """
-    message = f"{timestamp.strip()}.".encode("utf-8") + request_body
-    digest = hmac.new(
-        api_key.encode("utf-8"), message, hashlib.sha256
-    ).digest()
-    return base64.b64encode(digest).decode("ascii")
-
-
-def verify_hunar_webhook_signature(
-    *,
-    signature_header: Optional[str],
-    timestamp_header: Optional[str],
-    request_body: bytes,
-    trusted_api_keys: Iterable[str],
-) -> bool:
-    """
-    Validates X-Hunar-Signature header against trusted API keys.
-    Returns True if any comma-separated signature matches any trusted API key.
-    """
-    if not (signature_header and signature_header.strip()):
-        return False
-    if not (timestamp_header and timestamp_header.strip()):
-        return False
-
-    timestamp = timestamp_header.strip()
-    signatures = [
-        s.strip() for s in signature_header.split(",") if s.strip()
-    ]
-
-    for api_key in trusted_api_keys:
-        if not api_key:
-            continue
-        computed = compute_hunar_signature(
-            api_key=api_key,
-            request_body=request_body,
-            timestamp=timestamp,
-        )
-        for sig in signatures:
-            if hmac.compare_digest(sig, computed):
-                return True
-
-    return False
 
 
 class VoiceAIClient:
@@ -256,20 +203,3 @@ class VoiceAIClient:
             except httpx.HTTPError as e:
                 logger.error(f"Hunar HTTP error: {e}")
                 raise
-
-    @staticmethod
-    def verify_webhook_signature(
-        request_body: bytes,
-        signature_header: Optional[str],
-        timestamp_header: Optional[str],
-        api_key: str,
-    ) -> bool:
-        """Validates incoming webhook request using organization API key."""
-        if not api_key:
-            return True
-        return verify_hunar_webhook_signature(
-            signature_header=signature_header,
-            timestamp_header=timestamp_header,
-            request_body=request_body,
-            trusted_api_keys=[api_key],
-        )

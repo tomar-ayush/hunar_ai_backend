@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict
 from app.database import get_session
 from app.calls.model import CallSession
 from app.worker.tasks import extract_transcript
-from app.voice.service import VoiceAIClient
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -45,28 +44,11 @@ async def voice_call_webhook(
     """
     Official webhook receiver for Hunar.AI Voice Agents events.
 
-    - Validates HMAC-SHA256 signature using HUNAR_API_KEY (from X-Hunar-Signature & X-Hunar-Timestamp)
     - Idempotent: checks external call ID before processing
     - Updates CallSession duration, recording_url, and structured result/transcript
     - Enqueues background Gemini LLM extraction if call is completed
     """
     body = await request.body()
-    sig_header = request.headers.get("X-Hunar-Signature")
-    timestamp_header = request.headers.get("X-Hunar-Timestamp")
-
-    # 1. Validate signature using HUNAR_API_KEY if signature is present and key is configured
-    if sig_header and settings.HUNAR_API_KEY:
-        is_valid = VoiceAIClient.verify_webhook_signature(
-            request_body=body,
-            signature_header=sig_header,
-            timestamp_header=timestamp_header,
-            api_key=settings.HUNAR_API_KEY,
-        )
-        if not is_valid:
-            logger.warning("Invalid Hunar webhook signature rejected")
-            raise HTTPException(status_code=401, detail="Invalid signature")
-
-    # 2. Parse payload
     try:
         raw_json = json.loads(body.decode("utf-8")) if body else {}
         payload = VoiceCallWebhookPayload(**raw_json)
