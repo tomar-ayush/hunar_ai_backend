@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     APOLLO_API_KEY: str = ""
     APOLLO_BASE_URL: str = "https://api.apollo.io/api/v1"
 
+    # GitHub API (Optional, raises rate limit from 60 to 5,000 req/hr)
+    GITHUB_TOKEN: str = ""
+
     # Hunar.AI Voice API (Official external/v1 API)
     HUNAR_API_KEY: str = ""
     HUNAR_BASE_URL: str = "https://api.voice.hunar.ai/external/v1"

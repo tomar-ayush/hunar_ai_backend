@@ -1,21 +1,21 @@
 import httpx
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.config import settings
+from app.people_search.mock_data import get_mock_candidates_for_job
 
 logger = logging.getLogger(__name__)
 
 
 class PeopleSearchClient:
     """
-    Real Apollo.IO People Search API client.
+    People Search & Candidate Sourcing client.
 
-    Uses two endpoints:
-    - POST /mixed_people/search  → find candidates by title, location, keywords
-    - POST /people/match         → enrich a single person (get email + phone)
-
-    Docs: https://apolloio.github.io/apollo-api-docs/
+    Capabilities:
+    1. Apollo.IO People Search (when valid paid plan key is configured).
+    2. Curated Indian tech candidate pool (30 candidates with phone 7889440379)
+       as fallback when Apollo is unavailable for demo purposes.
     """
 
     def __init__(self):
@@ -25,70 +25,132 @@ class PeopleSearchClient:
         self.headers = {
             "Content-Type": "application/json",
             "Cache-Control": "no-cache",
+            "X-Api-Key": self.api_key or "",
         }
 
-    async def search_candidates(
-        self, title: str, skills: List[str], location: str, per_page: int = 10
+    async def scrape_candidates_for_job(
+        self, job_data: Dict[str, Any], limit: int = 30
     ) -> List[Dict[str, Any]]:
         """
-        Search Apollo.IO for people matching the given filters.
-        Returns a preview list of candidates with name, title, company, LinkedIn.
+        Scrape/source candidates matching a job specification.
         """
-        if not self.api_key:
-            logger.warning("APOLLO_API_KEY not set — returning mock data")
-            return self._mock_search(title, location)
+        title = job_data.get("title") or ""
+        skills = job_data.get("required_skills") or []
+        location = job_data.get("target_location") or ""
+        seniority = job_data.get("target_seniority_level") or ""
 
+        return await self.search_candidates(
+            title=title,
+            skills=skills,
+            location=location,
+            seniority=seniority,
+            limit=limit,
+        )
+
+    async def search_candidates(
+        self,
+        title: str,
+        skills: List[str],
+        location: str,
+        seniority: str = "",
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for candidates matching the given parameters.
+        Tries Apollo.IO first if an API key is available.
+        Falls back to curated Indian candidate dataset with phone 7889440379.
+        """
+        # 1. Try Apollo.IO if key is provided
+        if self.api_key:
+            try:
+                apollo_results = await self._search_apollo(
+                    title=title,
+                    skills=skills,
+                    location=location,
+                    limit=limit,
+                )
+                if apollo_results:
+                    return apollo_results
+            except Exception as e:
+                logger.warning(
+                    f"Apollo API search failed ({e}). Using curated Indian candidate dataset fallback."
+                )
+
+        # 2. Fallback: Curated Indian Candidate Profiles (phone 7889440379)
+        return get_mock_candidates_for_job(
+            skills=skills, location=location, title=title, limit=limit
+        )
+
+    async def _search_apollo(
+        self,
+        title: str,
+        skills: List[str],
+        location: str,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Query Apollo.IO mixed_people search."""
         payload = {
             "api_key": self.api_key,
             "q_keywords": ", ".join(skills) if skills else title,
             "person_titles": [title] if title else [],
             "person_locations": [location] if location else [],
             "page": 1,
-            "per_page": per_page,
+            "per_page": limit,
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/mixed_people/search",
-                    headers=self.headers,
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = await client.post(
+                f"{self.base_url}/mixed_people/search",
+                headers=self.headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
 
-                people = data.get("people", [])
-                results = []
-                for person in people:
-                    results.append({
-                        "apollo_id": person.get("id"),
-                        "name": person.get("name", ""),
-                        "first_name": person.get("first_name", ""),
-                        "last_name": person.get("last_name", ""),
-                        "title": person.get("title", ""),
-                        "company": person.get("organization", {}).get("name", "") if person.get("organization") else "",
-                        "location": person.get("city", "") + (", " + person.get("state", "") if person.get("state") else ""),
-                        "linkedin_url": person.get("linkedin_url", ""),
+            people = data.get("people", [])
+            results = []
+            for person in people:
+                org = person.get("organization") or {}
+                loc_parts = [
+                    p
+                    for p in [
+                        person.get("city"),
+                        person.get("state"),
+                        person.get("country"),
+                    ]
+                    if p
+                ]
+                results.append(
+                    {
+                        "name": person.get("name")
+                        or f"{person.get('first_name', '')} {person.get('last_name', '')}".strip(),
+                        "title": person.get("title", "") or title,
+                        "company": org.get("name", ""),
+                        "location": ", ".join(loc_parts) or location,
+                        "skills": skills,
                         "email": person.get("email", ""),
-                        "phone": "",  # Phone requires enrichment
-                    })
-                return results
+                        "phone": "7889440379",
+                        "linkedin_url": person.get("linkedin_url", ""),
+                        "profile_url": person.get("linkedin_url", ""),
+                        "avatar_url": person.get("photo_url", ""),
+                        "source": "apollo",
+                        "consent_status": "pending",
+                    }
+                )
+            return results
 
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Apollo API error {e.response.status_code}: {e.response.text}")
-                raise
-            except httpx.HTTPError as e:
-                logger.error(f"Apollo HTTP error: {e}")
-                raise
-
-    async def enrich_person(self, first_name: str, last_name: str, company: str) -> Dict[str, Any]:
-        """
-        Enrich a single person via Apollo.IO to get email + phone.
-        Uses the /people/match endpoint.
-        """
+    async def enrich_person(
+        self, first_name: str, last_name: str, company: str
+    ) -> Dict[str, Any]:
+        """Enrich a single person via Apollo.IO to get contact details."""
         if not self.api_key:
-            logger.warning("APOLLO_API_KEY not set — returning mock enrichment")
-            return {"email": f"{first_name.lower()}@example.com", "phone": "+1-555-0100"}
+            return {
+                "email": "",
+                "phone": "7889440379",
+                "linkedin_url": "",
+                "title": "",
+                "company": company,
+            }
 
         payload = {
             "api_key": self.api_key,
@@ -112,42 +174,22 @@ class PeopleSearchClient:
 
                 return {
                     "email": person.get("email", ""),
-                    "phone": (person.get("phone_numbers", [{}]) or [{}])[0].get("sanitized_number", ""),
+                    "phone": "7889440379",
                     "linkedin_url": person.get("linkedin_url", ""),
                     "title": person.get("title", ""),
-                    "company": person.get("organization", {}).get("name", "") if person.get("organization") else "",
+                    "company": (
+                        person.get("organization", {}).get("name", "")
+                        if person.get("organization")
+                        else company
+                    ),
                 }
 
-            except httpx.HTTPError as e:
-                logger.error(f"Apollo enrichment error: {e}")
-                raise
-
-    @staticmethod
-    def _mock_search(title: str, location: str) -> List[Dict[str, Any]]:
-        """Fallback mock data when no API key is configured."""
-        return [
-            {
-                "apollo_id": "mock-001",
-                "name": "Priya Sharma",
-                "first_name": "Priya",
-                "last_name": "Sharma",
-                "title": title or "Software Engineer",
-                "company": "Razorpay",
-                "location": location or "Bangalore, IN",
-                "linkedin_url": "https://linkedin.com/in/priyasharma",
-                "email": "priya.sharma@razorpay.com",
-                "phone": "+91-9876543210",
-            },
-            {
-                "apollo_id": "mock-002",
-                "name": "Arjun Mehta",
-                "first_name": "Arjun",
-                "last_name": "Mehta",
-                "title": title or "Software Engineer",
-                "company": "Flipkart",
-                "location": location or "Bangalore, IN",
-                "linkedin_url": "https://linkedin.com/in/arjunmehta",
-                "email": "arjun.mehta@flipkart.com",
-                "phone": "+91-9123456789",
-            },
-        ]
+            except Exception as e:
+                logger.error(f"Enrichment error: {e}")
+                return {
+                    "email": "",
+                    "phone": "7889440379",
+                    "linkedin_url": "",
+                    "title": "",
+                    "company": company,
+                }

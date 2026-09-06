@@ -9,6 +9,7 @@ from app.jobs.router import router as job_router
 from app.candidates.router import router as candidate_router
 from app.webhooks.router import router as webhooks_router
 from app.agents.router import router as agent_router
+from app.people_search.router import router as people_search_router
 
 
 # ── Structured Logging ──
@@ -72,6 +73,7 @@ app.include_router(job_router)
 app.include_router(candidate_router)
 app.include_router(webhooks_router)
 app.include_router(agent_router)
+app.include_router(people_search_router)
 
 
 @app.get("/", tags=["Health"])

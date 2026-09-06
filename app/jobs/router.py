@@ -190,6 +190,7 @@ async def source_candidates(
         title=search_title,
         skills=search_skills,
         location=search_location,
+        seniority=job.target_seniority_level or "",
     )
 
     return {"filters_used": filters_used, "preview": preview_list}
@@ -279,6 +280,13 @@ def get_dashboard(
                     "name": cand.name,
                     "phone": cand.phone,
                     "email": cand.email,
+                    "title": cand.title,
+                    "company": cand.company,
+                    "location": cand.location,
+                    "linkedin_url": cand.linkedin_url,
+                    "profile_url": cand.profile_url,
+                    "avatar_url": cand.avatar_url,
+                    "skills": cand.skills or [],
                     "source": cand.source,
                     "consent_status": cand.consent_status,
                 },
