@@ -1,6 +1,13 @@
 import asyncio
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    File,
+    status,
+)
 from sqlmodel import Session, select
 from pydantic import BaseModel
 import uuid
@@ -26,6 +33,7 @@ class ApprovedCandidates(BaseModel):
 # ──────────────────────────────────────────────
 # Job CRUD (No Authentication Required)
 # ──────────────────────────────────────────────
+
 
 @router.post("", response_model=JobRead)
 def create_job(
@@ -76,9 +84,39 @@ def update_job(
     return db_job
 
 
+@router.delete("/{id}")
+def delete_job(
+    id: uuid.UUID,
+    session: Session = Depends(get_session),
+):
+    """
+    Delete a job and any associated candidates.
+    """
+    job = session.get(Job, id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Delete associated candidates to satisfy foreign key constraints
+    candidates = session.exec(
+        select(Candidate).where(Candidate.job_id == id)
+    ).all()
+    for candidate in candidates:
+        session.delete(candidate)
+
+    session.delete(job)
+    session.commit()
+
+    return {
+        "status": "success",
+        "message": f"Job '{job.title}' and {len(candidates)} associated candidates deleted successfully",
+        "id": str(id),
+    }
+
+
 # ──────────────────────────────────────────────
 # Candidate management
 # ──────────────────────────────────────────────
+
 
 @router.post("/{id}/candidates", response_model=CandidateRead)
 def add_candidate(
@@ -154,6 +192,7 @@ def list_candidates(
 # Sourcing (Apollo.IO integration)
 # ──────────────────────────────────────────────
 
+
 @router.post("/{id}/source")
 async def source_candidates(
     id: uuid.UUID,
@@ -169,11 +208,15 @@ async def source_candidates(
         raise HTTPException(status_code=404, detail="Job not found")
 
     llm_client = LLMClient()
-    filters = await llm_client.extract_filters_from_jd(job.jd_text or "")
+    filters = await llm_client.extract_filters_from_jd(
+        job.jd_text or ""
+    )
 
     # Merge explicitly specified job attributes if provided
     search_title = filters.get("targetTitle") or job.title
-    search_skills = list(set(filters.get("skills", []) + (job.required_skills or [])))
+    search_skills = list(
+        set(filters.get("skills", []) + (job.required_skills or []))
+    )
     search_location = job.target_location or filters.get("location", "")
 
     filters_used = {
@@ -224,6 +267,7 @@ def approve_candidates(
 # Dashboard (aggregated view)
 # ──────────────────────────────────────────────
 
+
 @router.get("/{id}/dashboard")
 def get_dashboard(
     id: uuid.UUID,
@@ -262,7 +306,9 @@ def get_dashboard(
                     "consent_status": cand.consent_status,
                     "call_id": cand.call_id,
                 },
-                "call_status": "triggered" if cand.call_id else "not_called",
+                "call_status": "triggered"
+                if cand.call_id
+                else "not_called",
                 "duration": 0,
                 "recording_url": None,
                 "answers": [],
