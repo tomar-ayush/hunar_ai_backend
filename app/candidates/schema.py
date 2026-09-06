@@ -18,6 +18,7 @@ class CandidateCreate(BaseModel):
     skills: Optional[List[str]] = Field(default_factory=list)
     source: str = "manual_upload"
     consent_status: str = "pending"
+    call_id: Optional[str] = None
 
 
 class CandidateRead(CandidateCreate):
@@ -38,6 +39,7 @@ class CandidateUpdate(BaseModel):
     skills: Optional[List[str]] = None
     source: Optional[str] = None
     consent_status: Optional[str] = None
+    call_id: Optional[str] = None
 
 
 class TriggerCallRequest(BaseModel):

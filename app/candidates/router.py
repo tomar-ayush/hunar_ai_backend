@@ -1,5 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlmodel import Session
+from sqlmodel import Session, select
 from typing import Optional
 import uuid
 
@@ -7,6 +7,8 @@ from app.database import get_session
 from app.candidates.model import Candidate
 from app.candidates.schema import TriggerCallRequest
 from app.jobs.model import Job
+from app.calls.model import CallSession
+from app.voice.service import VoiceAIClient
 from app.worker.tasks import trigger_call
 
 
@@ -63,3 +65,70 @@ async def call_candidate(
         "agent_id": agent_id,
         "phone_number": effective_phone,
     }
+
+
+@router.get("/{id}/call-details")
+async def get_candidate_call_details(
+    id: uuid.UUID,
+    session: Session = Depends(get_session),
+):
+    """
+    Get the call details of a candidate from Hunar Voice API via candidate_id.
+    Calls Hunar API: GET /external/v1/calls/{call_id}/
+    Returns all call attributes including callee_name, mobile_number, agent_id,
+    duration, recording_url, and the evaluation result (summary, answers, suitability_score).
+    """
+    candidate = session.get(Candidate, id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    if not candidate.call_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No call has been triggered for this candidate yet (candidate.call_id is empty).",
+        )
+
+    client = VoiceAIClient()
+    try:
+        call_details = await client.get_call_details(candidate.call_id)
+        if isinstance(call_details, dict) and call_details:
+            call_details.setdefault("call_id", candidate.call_id)
+            call_details.setdefault("candidate_id", str(candidate.id))
+            return call_details
+    except Exception as e:
+        # Fall back to local DB if Hunar API is temporarily unreachable
+        call_session = session.exec(
+            select(CallSession).where(CallSession.external_call_id == candidate.call_id)
+        ).first()
+        if call_session:
+            return {
+                "id": candidate.call_id,
+                "call_id": candidate.call_id,
+                "candidate_id": str(candidate.id),
+                "callee_name": candidate.name,
+                "mobile_number": candidate.phone,
+                "status": (call_session.status or "COMPLETED").upper(),
+                "duration_seconds": call_session.duration,
+                "recording_url": call_session.recording_url,
+                "result": call_session.transcript or {},
+            }
+        raise HTTPException(status_code=500, detail=f"Failed to fetch call details from Hunar: {e}")
+
+    # If call_details came back empty
+    call_session = session.exec(
+        select(CallSession).where(CallSession.external_call_id == candidate.call_id)
+    ).first()
+    if call_session:
+        return {
+            "id": candidate.call_id,
+            "call_id": candidate.call_id,
+            "candidate_id": str(candidate.id),
+            "callee_name": candidate.name,
+            "mobile_number": candidate.phone,
+            "status": (call_session.status or "COMPLETED").upper(),
+            "duration_seconds": call_session.duration,
+            "recording_url": call_session.recording_url,
+            "result": call_session.transcript or {},
+        }
+
+    return {"call_id": candidate.call_id, "candidate_id": str(candidate.id), "status": "UNKNOWN"}

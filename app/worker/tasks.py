@@ -99,6 +99,10 @@ async def trigger_call(
                     session.commit()
                     return None
 
+        # Map candidate to call
+        candidate.call_id = external_call_id
+        session.add(candidate)
+
         # Create the call session record
         call_session = CallSession(
             candidate_id=candidate.id,
@@ -138,13 +142,63 @@ async def extract_transcript(call_session_id: str, max_retries: int = 2) -> bool
             logger.error(f"Job {candidate.job_id} not found")
             return False
 
-        # Format transcript data for LLM analysis
+        # Format transcript data
         transcript_raw = call_session.transcript
+
+        # If Hunar already provided evaluated results (questions, answers, suitability score)
+        if isinstance(transcript_raw, dict) and any(k.startswith("question_") for k in transcript_raw.keys()):
+            script_data = job.script or {}
+            job_questions = script_data.get("questions", [])
+
+            # Save answers
+            for k, val in transcript_raw.items():
+                if k.startswith("question_") and k.endswith("_answer"):
+                    try:
+                        idx = int(k.split("_")[1]) - 1
+                        q_text = job_questions[idx] if 0 <= idx < len(job_questions) else k.replace("_", " ").title()
+                    except (ValueError, IndexError):
+                        q_text = k.replace("_", " ").title()
+
+                    session.add(
+                        Answer(
+                            call_session_id=call_session.id,
+                            question=q_text,
+                            extracted_answer=str(val),
+                            confidence=1.0,
+                        )
+                    )
+
+            # Save score
+            suitability = transcript_raw.get("suitability_score")
+            score_val = 70
+            if suitability is not None:
+                try:
+                    s_float = float(suitability)
+                    score_val = int(s_float * 10) if s_float <= 10 else int(s_float)
+                except ValueError:
+                    pass
+
+            summary = transcript_raw.get("candidate_summary", "")
+            rec = transcript_raw.get("overall_recommendation", "")
+            reasoning_parts = [p for p in [summary, f"Recommendation: {rec}" if rec else ""] if p]
+            reasoning = " | ".join(reasoning_parts) or "Evaluated by Hunar Voice AI"
+
+            session.add(
+                Score(
+                    call_session_id=call_session.id,
+                    score=score_val,
+                    reasoning=reasoning,
+                )
+            )
+
+            call_session.status = "completed"
+            session.add(call_session)
+            session.commit()
+            logger.info(f"Extraction complete directly from Hunar result: session={call_session_id}, score={score_val}")
+            return True
+
         if isinstance(transcript_raw, dict):
-            # Check if Hunar sent a structured result dict
-            messages = []
-            for k, v in transcript_raw.items():
-                messages.append({"speaker": k, "text": str(v)})
+            messages = [{"speaker": k, "text": str(v)} for k, v in transcript_raw.items()]
             transcript_messages = messages
         elif isinstance(transcript_raw, list):
             transcript_messages = transcript_raw

@@ -56,8 +56,12 @@ async def scrape_and_save_candidates_for_job(
     existing_cands = session.exec(
         select(Candidate).where(Candidate.job_id == job_id)
     ).all()
-    existing_by_email = {cand.email: cand for cand in existing_cands if cand.email}
-    existing_by_name = {cand.name: cand for cand in existing_cands if cand.name}
+    existing_by_email = {
+        cand.email: cand for cand in existing_cands if cand.email
+    }
+    existing_by_name = {
+        cand.name: cand for cand in existing_cands if cand.name
+    }
 
     for c in scraped_data:
         name = c.get("name") or "Unknown"
@@ -151,5 +155,6 @@ async def scrape_candidates_by_job_path(
     limit: int = Query(10, description="Max candidates to scrape"),
     session: Session = Depends(get_session),
 ):
-    return await scrape_and_save_candidates_for_job(job_id=job_id, limit=limit, session=session)
-
+    return await scrape_and_save_candidates_for_job(
+        job_id=job_id, limit=limit, session=session
+    )

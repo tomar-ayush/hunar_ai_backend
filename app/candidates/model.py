@@ -19,4 +19,5 @@ class Candidate(SQLModel, table=True):
     skills: Optional[List[str]] = Field(default_factory=list, sa_column=Column(JSON))
     source: str = Field(default="manual_upload")
     consent_status: str = Field(default="pending")
+    call_id: Optional[str] = Field(default=None, description="Hunar AI external call ID mapping this candidate to their call")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

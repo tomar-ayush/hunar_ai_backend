@@ -289,6 +289,7 @@ def get_dashboard(
                     "skills": cand.skills or [],
                     "source": cand.source,
                     "consent_status": cand.consent_status,
+                    "call_id": cand.call_id,
                 },
                 "call_status": call.status if call else "not_called",
                 "duration": call.duration if call else 0,

@@ -203,3 +203,24 @@ class VoiceAIClient:
             except httpx.HTTPError as e:
                 logger.error(f"Hunar HTTP error: {e}")
                 raise
+
+    async def get_call_details(self, call_id: str) -> Dict[str, Any]:
+        """
+        Fetch full call details and extracted results from Hunar Voice API.
+        Endpoint: GET /external/v1/calls/{call_id}/
+        """
+        if not self.api_key:
+            logger.warning("HUNAR_API_KEY not set — cannot fetch call details")
+            return {}
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f"{self.base_url}/calls/{call_id}/",
+                    headers=self.headers,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as e:
+                logger.error(f"Failed to fetch Hunar call details for {call_id}: {e}")
+                raise
