@@ -1,3 +1,4 @@
+import json
 import httpx
 import logging
 from typing import Dict, Any, List, Optional
@@ -156,12 +157,31 @@ class VoiceAIClient:
             else:
                 formatted_phone = f"+{formatted_phone}"
 
+        # Ensure standard keys expected by agents are always populated
+        merged_custom_data = {
+            "job_role": "Software Engineer",
+            "job_title": "Software Engineer",
+            "job_description": "Role at Recruiter Portal",
+            "company": "Recruiter Portal",
+            "company_name": "Recruiter Portal",
+            "recruiter_org": "Recruiter Portal",
+            "candidate_name": candidate_name or "Candidate",
+            "callee_name": candidate_name or "Candidate",
+            "location": "Bengaluru / Remote",
+            "candidate_headline": "Candidate",
+            "candidate_current_title": "Engineer",
+            "jd_summary": "Role at Recruiter Portal",
+            "key_requirements": "Relevant experience",
+        }
+        if custom_data:
+            merged_custom_data.update(custom_data)
+
         # Prepare payload matching official schema
         call_payload: Dict[str, Any] = {
             "agent_id": resolved_agent_id,
             "callee_name": candidate_name or "Candidate",
             "mobile_number": formatted_phone,
-            "custom_data": custom_data or {},
+            "custom_data": merged_custom_data,
         }
 
         if request_id:
@@ -181,6 +201,10 @@ class VoiceAIClient:
                 "call_summary_callback_url": cb_url,
             }
 
+        logger.info(
+            f"Sending outbound call request to Hunar API: url={self.base_url}/calls/, payload={json.dumps(call_payload, default=str)}"
+        )
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.post(
@@ -192,16 +216,16 @@ class VoiceAIClient:
                 data = response.json()
                 call_id = data.get("id")
                 logger.info(
-                    f"Hunar call triggered successfully: id={call_id} to={candidate_phone}"
+                    f"Hunar call triggered successfully: id={call_id} to={candidate_phone}, response={data}"
                 )
                 return str(call_id)
             except httpx.HTTPStatusError as e:
                 logger.error(
-                    f"Hunar call creation error {e.response.status_code}: {e.response.text}"
+                    f"Hunar call creation error {e.response.status_code}: response_text={e.response.text}, payload_sent={call_payload}"
                 )
                 raise
             except httpx.HTTPError as e:
-                logger.error(f"Hunar HTTP error: {e}")
+                logger.error(f"Hunar HTTP error: {e}, payload_sent={call_payload}")
                 raise
 
     async def get_call_details(self, call_id: str) -> Dict[str, Any]:
