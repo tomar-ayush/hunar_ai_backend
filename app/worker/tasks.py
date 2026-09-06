@@ -68,6 +68,7 @@ async def trigger_call(
         if isinstance(script_data.get("custom_data"), dict):
             custom_data.update(script_data["custom_data"])
 
+        effective_agent_id = agent_id or job.agent_id
         voice_client = VoiceAIClient()
 
         external_call_id = None
@@ -76,7 +77,7 @@ async def trigger_call(
                 external_call_id = await voice_client.trigger_outbound_call(
                     candidate_phone=target_phone,
                     candidate_name=candidate.name,
-                    agent_id=agent_id,
+                    agent_id=effective_agent_id,
                     custom_data=custom_data,
                     request_id=str(candidate.id),
                 )

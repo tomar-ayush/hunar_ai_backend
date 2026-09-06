@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 class JobCreate(BaseModel):
     title: str
     jd_text: str
+    agent_id: Optional[str] = None
     target_seniority_level: Optional[str] = None
     target_location: Optional[str] = None
     experience_required: Optional[str] = None
@@ -20,6 +21,7 @@ class JobRead(JobCreate):
 class JobUpdate(BaseModel):
     title: Optional[str] = None
     jd_text: Optional[str] = None
+    agent_id: Optional[str] = None
     target_seniority_level: Optional[str] = None
     target_location: Optional[str] = None
     experience_required: Optional[str] = None

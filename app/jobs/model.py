@@ -7,6 +7,7 @@ class Job(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     title: str
     jd_text: str
+    agent_id: Optional[str] = Field(default=None, description="Hunar AI voice agent ID for this job")
     target_seniority_level: Optional[str] = None
     target_location: Optional[str] = None
     experience_required: Optional[str] = None
