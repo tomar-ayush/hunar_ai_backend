@@ -38,3 +38,13 @@ class CandidateUpdate(BaseModel):
     skills: Optional[List[str]] = None
     source: Optional[str] = None
     consent_status: Optional[str] = None
+
+
+class TriggerCallRequest(BaseModel):
+    agent_id: Optional[str] = Field(None, description="Hunar AI Voice Agent ID to use for the call")
+    phone_number: Optional[str] = Field(None, description="Target phone number (overrides candidate phone if provided)")
+    phone: Optional[str] = Field(None, description="Alternative alias for phone_number")
+
+    def get_phone(self) -> Optional[str]:
+        target = self.phone_number or self.phone
+        return target.strip() if target else None

@@ -1,6 +1,6 @@
 import json
 import logging
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, HTTPException
 from sqlmodel import Session, select
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, ConfigDict
@@ -39,6 +39,7 @@ class VoiceCallWebhookPayload(BaseModel):
 @router.post("/voice-call")
 async def voice_call_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ):
     """
@@ -130,7 +131,7 @@ async def voice_call_webhook(
 
     # 6. Trigger background extraction task for completed calls
     if norm_status == "completed":
-        extract_transcript.delay(str(call_session.id))
-        logger.info(f"Enqueued extraction task for call_session {call_session.id}")
+        background_tasks.add_task(extract_transcript, str(call_session.id))
+        logger.info(f"Enqueued background extraction task for call_session {call_session.id}")
 
     return {"status": "success", "call_id": effective_call_id}

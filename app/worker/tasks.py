@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Callable, Any
 from sqlmodel import Session, select
 
-from app.worker.celery_app import celery_app
 from app.database import engine
 from app.candidates.model import Candidate
 from app.jobs.model import Job
@@ -14,15 +13,30 @@ from app.llm.service import LLMClient
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="tasks.trigger_call", bind=True, max_retries=3)
-def trigger_call(self, candidate_id: str) -> Optional[str]:
+def _make_delay_wrapper(async_func: Callable[..., Any]) -> Callable[..., Any]:
+    """Provides backward compatibility for code or test fixtures invoking .delay()."""
+    def delay(*args, **kwargs):
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(async_func(*args, **kwargs))
+        except RuntimeError:
+            return asyncio.run(async_func(*args, **kwargs))
+    return delay
+
+
+async def trigger_call(
+    candidate_id: str,
+    agent_id: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    max_retries: int = 2,
+) -> Optional[str]:
     """
-    Celery task: Trigger an outbound voice call via Hunar.AI.
+    FastAPI Background Task: Trigger an outbound voice call via Hunar.AI.
 
     Flow:
     1. Load candidate + job from DB
-    2. Build custom_data & resolve agent
-    3. Call Hunar.AI Voice API (POST /external/v1/calls/)
+    2. Build custom_data & resolve agent (using optional agent_id override)
+    3. Call Hunar.AI Voice API (POST /external/v1/calls/) with target phone number
     4. Store the external_call_id, set status=in_progress
     """
     with Session(engine) as session:
@@ -37,6 +51,14 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
             logger.error(f"Job {candidate.job_id} not found for candidate {candidate_id}")
             return None
 
+        # Resolve target phone number: override if provided, else candidate's phone
+        target_phone = (phone_number or candidate.phone or "").strip()
+        if phone_number and candidate.phone != phone_number:
+            candidate.phone = phone_number
+            session.add(candidate)
+            session.commit()
+            session.refresh(candidate)
+
         script_data = job.script or {}
         custom_data = {
             "job_role": job.title,
@@ -48,25 +70,34 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
 
         voice_client = VoiceAIClient()
 
-        try:
-            external_call_id = asyncio.run(
-                voice_client.trigger_outbound_call(
-                    candidate_phone=candidate.phone,
+        external_call_id = None
+        for attempt in range(max_retries + 1):
+            try:
+                external_call_id = await voice_client.trigger_outbound_call(
+                    candidate_phone=target_phone,
                     candidate_name=candidate.name,
+                    agent_id=agent_id,
                     custom_data=custom_data,
                     request_id=str(candidate.id),
                 )
-            )
-        except Exception as e:
-            logger.error(f"Failed to trigger call for {candidate_id}: {e}")
-            call_session = CallSession(
-                candidate_id=candidate.id,
-                status="failed",
-                external_call_id=None,
-            )
-            session.add(call_session)
-            session.commit()
-            raise self.retry(exc=e, countdown=30)
+                if external_call_id:
+                    break
+            except Exception as e:
+                logger.warning(
+                    f"Call trigger attempt {attempt + 1}/{max_retries + 1} failed for {candidate_id}: {e}"
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(2 * (attempt + 1))
+                else:
+                    logger.error(f"All call trigger attempts failed for candidate {candidate_id}: {e}")
+                    call_session = CallSession(
+                        candidate_id=candidate.id,
+                        status="failed",
+                        external_call_id=None,
+                    )
+                    session.add(call_session)
+                    session.commit()
+                    return None
 
         # Create the call session record
         call_session = CallSession(
@@ -81,10 +112,9 @@ def trigger_call(self, candidate_id: str) -> Optional[str]:
         return external_call_id
 
 
-@celery_app.task(name="tasks.extract_transcript", bind=True, max_retries=3)
-def extract_transcript(self, call_session_id: str) -> bool:
+async def extract_transcript(call_session_id: str, max_retries: int = 2) -> bool:
     """
-    Celery task: Extract answers + score from a completed call transcript or Hunar result.
+    FastAPI Background Task: Extract answers + score from a completed call transcript or Hunar result.
 
     Flow:
     1. Load the CallSession (which has the transcript/results from the webhook)
@@ -134,16 +164,22 @@ def extract_transcript(self, call_session_id: str) -> bool:
 
         llm_client = LLMClient()
 
-        try:
-            answers = asyncio.run(
-                llm_client.extract_answers_from_transcript(transcript_messages, questions)
-            )
-            score_data = asyncio.run(
-                llm_client.score_transcript(transcript_messages, scoring_criteria)
-            )
-        except Exception as e:
-            logger.error(f"LLM extraction failed for session {call_session_id}: {e}")
-            raise self.retry(exc=e, countdown=60)
+        answers = []
+        score_data = {}
+        for attempt in range(max_retries + 1):
+            try:
+                answers = await llm_client.extract_answers_from_transcript(transcript_messages, questions)
+                score_data = await llm_client.score_transcript(transcript_messages, scoring_criteria)
+                break
+            except Exception as e:
+                logger.warning(
+                    f"LLM extraction attempt {attempt + 1}/{max_retries + 1} failed for session {call_session_id}: {e}"
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(3 * (attempt + 1))
+                else:
+                    logger.error(f"All LLM extraction attempts failed for session {call_session_id}: {e}")
+                    return False
 
         # Save answers
         for ans in answers:
@@ -172,3 +208,8 @@ def extract_transcript(self, call_session_id: str) -> bool:
             f"score={score_data.get('score')}, answers={len(answers)}"
         )
         return True
+
+
+# Backward compatibility aliases for fixtures/code expecting .delay()
+trigger_call.delay = _make_delay_wrapper(trigger_call)
+extract_transcript.delay = _make_delay_wrapper(extract_transcript)

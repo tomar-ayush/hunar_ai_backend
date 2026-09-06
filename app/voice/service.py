@@ -10,13 +10,17 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def compute_hunar_signature(*, api_key: str, request_body: bytes, timestamp: str) -> str:
+def compute_hunar_signature(
+    *, api_key: str, request_body: bytes, timestamp: str
+) -> str:
     """
     Computes base64-encoded HMAC-SHA256 signature matching Hunar's official specification:
     message = f"{timestamp.strip()}.".encode("utf-8") + request_body
     """
     message = f"{timestamp.strip()}.".encode("utf-8") + request_body
-    digest = hmac.new(api_key.encode("utf-8"), message, hashlib.sha256).digest()
+    digest = hmac.new(
+        api_key.encode("utf-8"), message, hashlib.sha256
+    ).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
@@ -37,7 +41,9 @@ def verify_hunar_webhook_signature(
         return False
 
     timestamp = timestamp_header.strip()
-    signatures = [s.strip() for s in signature_header.split(",") if s.strip()]
+    signatures = [
+        s.strip() for s in signature_header.split(",") if s.strip()
+    ]
 
     for api_key in trusted_api_keys:
         if not api_key:
@@ -78,11 +84,21 @@ class VoiceAIClient:
             "Content-Type": "application/json",
         }
 
-    async def list_agents(self, page: int = 1, page_size: int = 20) -> List[Dict[str, Any]]:
+    async def list_agents(
+        self, page: int = 1, page_size: int = 20
+    ) -> List[Dict[str, Any]]:
         """List active agents for the organization."""
         if not self.api_key:
-            logger.warning("HUNAR_API_KEY not set — returning mock agent")
-            return [{"id": "mock-agent-uuid-001", "name": "Default HR Screening Agent", "status": "ACTIVE"}]
+            logger.warning(
+                "HUNAR_API_KEY not set — returning mock agent"
+            )
+            return [
+                {
+                    "id": "mock-agent-uuid-001",
+                    "name": "Default HR Screening Agent",
+                    "status": "ACTIVE",
+                }
+            ]
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
@@ -106,10 +122,20 @@ class VoiceAIClient:
     ) -> Dict[str, Any]:
         """Create a dedicated screening agent configured for a specific job."""
         if not self.api_key:
-            return {"id": "mock-agent-uuid-001", "name": f"{job_title} Screening Agent"}
+            return {
+                "id": "mock-agent-uuid-001",
+                "name": f"{job_title} Screening Agent",
+            }
 
-        questions_text = "\n".join(f"- {q}" for q in screening_questions) if screening_questions else "- Describe your relevant experience."
-        intro = opening_line or f"Hello! Am I speaking with {{callee_name}}? I'm calling about the {job_title} role."
+        questions_text = (
+            "\n".join(f"- {q}" for q in screening_questions)
+            if screening_questions
+            else "- Describe your relevant experience."
+        )
+        intro = (
+            opening_line
+            or f"Hello! Am I speaking with {{callee_name}}? I'm calling about the {job_title} role."
+        )
 
         agent_data = {
             "name": f"{job_title[:40]} Screening Agent",
@@ -161,23 +187,33 @@ class VoiceAIClient:
         Endpoint: POST /external/v1/calls/
         """
         if not self.api_key:
-            logger.warning("HUNAR_API_KEY not set — returning mock call ID")
+            logger.warning(
+                "HUNAR_API_KEY not set — returning mock call ID"
+            )
             return f"hunar_mock_{candidate_phone[-4:] if candidate_phone else '0000'}"
 
         # Resolve agent_id: parameter -> settings -> first existing agent
         resolved_agent_id = agent_id or settings.HUNAR_AGENT_ID
         if not resolved_agent_id:
-            agents = await self.list_agents(page_size=5)
-            if agents:
-                resolved_agent_id = agents[0].get("id")
+            raise ValueError(
+                "No Hunar agent set. Set HUNAR_AGENT_ID or create an agent first."
+            )
+
+        # Ensure phone number is E.164 formatted
+        formatted_phone = (
+            candidate_phone.strip() if candidate_phone else ""
+        )
+        if formatted_phone and not formatted_phone.startswith("+"):
+            if len(formatted_phone) == 10:
+                formatted_phone = f"+91{formatted_phone}"
             else:
-                raise ValueError("No Hunar agent found. Set HUNAR_AGENT_ID or create an agent first.")
+                formatted_phone = f"+{formatted_phone}"
 
         # Prepare payload matching official schema
         call_payload: Dict[str, Any] = {
             "agent_id": resolved_agent_id,
             "callee_name": candidate_name or "Candidate",
-            "mobile_number": candidate_phone,
+            "mobile_number": formatted_phone,
             "custom_data": custom_data or {},
         }
 
@@ -185,7 +221,11 @@ class VoiceAIClient:
             call_payload["request_id"] = str(request_id)
 
         # Configure webhooks if callback URL is available
-        cb_url = callback_url or (f"{settings.HUNAR_CALLBACK_BASE_URL.rstrip('/')}/webhooks/voice-call" if settings.HUNAR_CALLBACK_BASE_URL else None)
+        cb_url = callback_url or (
+            f"{settings.HUNAR_CALLBACK_BASE_URL.rstrip('/')}/webhooks/voice-call"
+            if settings.HUNAR_CALLBACK_BASE_URL
+            else None
+        )
         if cb_url:
             call_payload["callback_config"] = {
                 "call_status_callback_url": cb_url,
@@ -204,10 +244,14 @@ class VoiceAIClient:
                 response.raise_for_status()
                 data = response.json()
                 call_id = data.get("id")
-                logger.info(f"Hunar call triggered successfully: id={call_id} to={candidate_phone}")
+                logger.info(
+                    f"Hunar call triggered successfully: id={call_id} to={candidate_phone}"
+                )
                 return str(call_id)
             except httpx.HTTPStatusError as e:
-                logger.error(f"Hunar call creation error {e.response.status_code}: {e.response.text}")
+                logger.error(
+                    f"Hunar call creation error {e.response.status_code}: {e.response.text}"
+                )
                 raise
             except httpx.HTTPError as e:
                 logger.error(f"Hunar HTTP error: {e}")
