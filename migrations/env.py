@@ -9,7 +9,6 @@ from alembic import context
 # Import all models so Alembic can detect them for autogenerate
 from app.jobs.model import Job  # noqa: F401
 from app.candidates.model import Candidate  # noqa: F401
-from app.calls.model import CallSession, Answer, Score  # noqa: F401
 from app.config import settings
 
 config = context.config

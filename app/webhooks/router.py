@@ -8,8 +8,6 @@ from pydantic import BaseModel, ConfigDict
 
 from app.database import get_session
 from app.candidates.model import Candidate
-from app.calls.model import CallSession
-from app.worker.tasks import extract_transcript
 from app.voice.service import VoiceAIClient
 
 logger = logging.getLogger(__name__)
@@ -43,7 +41,7 @@ async def voice_call_webhook(
     """
     Webhook for Hunar AI calls.
     Sources call details from Hunar Voice API /external/v1/calls/{call_id}/
-    and updates CallSession and Candidate call_id.
+    and updates Candidate call_id.
     """
     body = await request.body()
     try:
@@ -65,18 +63,6 @@ async def voice_call_webhook(
         logger.warning(f"Could not fetch from Hunar API, using payload: {e}")
         hunar_data = raw_json
 
-    norm_status = (hunar_data.get("status") or payload.status or "completed").lower()
-    recording_url = hunar_data.get("recording_url") or payload.recording_url
-    result_data = hunar_data.get("result") or payload.result or {}
-    duration_sec = hunar_data.get("duration_seconds") or payload.duration_seconds
-    if duration_sec is None and hunar_data.get("duration_minutes") is not None:
-        duration_sec = float(hunar_data["duration_minutes"]) * 60
-
-    # Locate CallSession by external_call_id or candidate request_id
-    call_session = session.exec(
-        select(CallSession).where(CallSession.external_call_id == effective_call_id)
-    ).first()
-
     req_id = hunar_data.get("request_id") or payload.request_id
     candidate = None
     if req_id:
@@ -85,42 +71,12 @@ async def voice_call_webhook(
         except (ValueError, TypeError):
             pass
 
-    if not candidate and call_session:
-        candidate = session.get(Candidate, call_session.candidate_id)
-
-    # As soon as we have call_id, update candidate table with call_id
+    # Update candidate table with call_id if it's missing or out of sync
     if candidate:
-        candidate.call_id = effective_call_id
-        session.add(candidate)
-
-    if not call_session and candidate:
-        call_session = CallSession(
-            candidate_id=candidate.id,
-            external_call_id=effective_call_id,
-            status=norm_status,
-        )
-        session.add(call_session)
-
-    if not call_session:
-        logger.warning(f"Webhook received for unknown call: {effective_call_id}")
-        return {"status": "ignored", "detail": "session not found"}
-
-    # Update call session fields
-    call_session.status = norm_status
-    if recording_url:
-        call_session.recording_url = recording_url
-    if duration_sec is not None:
-        call_session.duration = int(duration_sec)
-    if result_data:
-        call_session.transcript = result_data
-
-    session.add(call_session)
-    session.commit()
-    session.refresh(call_session)
-
-    # Trigger background extraction task for completed calls
-    if norm_status == "completed":
-        background_tasks.add_task(extract_transcript, str(call_session.id))
+        if candidate.call_id != effective_call_id:
+            candidate.call_id = effective_call_id
+            session.add(candidate)
+            session.commit()
 
     return {
         "status": "success",

@@ -7,7 +7,6 @@ from app.database import get_session
 from app.candidates.model import Candidate
 from app.candidates.schema import TriggerCallRequest
 from app.jobs.model import Job
-from app.calls.model import CallSession
 from app.voice.service import VoiceAIClient
 from app.worker.tasks import trigger_call
 
@@ -96,39 +95,6 @@ async def get_candidate_call_details(
             call_details.setdefault("candidate_id", str(candidate.id))
             return call_details
     except Exception as e:
-        # Fall back to local DB if Hunar API is temporarily unreachable
-        call_session = session.exec(
-            select(CallSession).where(CallSession.external_call_id == candidate.call_id)
-        ).first()
-        if call_session:
-            return {
-                "id": candidate.call_id,
-                "call_id": candidate.call_id,
-                "candidate_id": str(candidate.id),
-                "callee_name": candidate.name,
-                "mobile_number": candidate.phone,
-                "status": (call_session.status or "COMPLETED").upper(),
-                "duration_seconds": call_session.duration,
-                "recording_url": call_session.recording_url,
-                "result": call_session.transcript or {},
-            }
         raise HTTPException(status_code=500, detail=f"Failed to fetch call details from Hunar: {e}")
-
-    # If call_details came back empty
-    call_session = session.exec(
-        select(CallSession).where(CallSession.external_call_id == candidate.call_id)
-    ).first()
-    if call_session:
-        return {
-            "id": candidate.call_id,
-            "call_id": candidate.call_id,
-            "candidate_id": str(candidate.id),
-            "callee_name": candidate.name,
-            "mobile_number": candidate.phone,
-            "status": (call_session.status or "COMPLETED").upper(),
-            "duration_seconds": call_session.duration,
-            "recording_url": call_session.recording_url,
-            "result": call_session.transcript or {},
-        }
 
     return {"call_id": candidate.call_id, "candidate_id": str(candidate.id), "status": "UNKNOWN"}

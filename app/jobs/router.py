@@ -12,7 +12,6 @@ from app.jobs.model import Job
 from app.jobs.schema import JobCreate, JobRead, JobUpdate
 from app.candidates.model import Candidate
 from app.candidates.schema import CandidateCreate, CandidateRead
-from app.calls.model import CallSession, Answer, Score
 from app.llm.service import LLMClient
 from app.people_search.service import PeopleSearchClient
 
@@ -244,35 +243,7 @@ def get_dashboard(
 
     dashboard_data = []
     for cand in candidates:
-        call = session.exec(
-            select(CallSession).where(CallSession.candidate_id == cand.id)
-        ).first()
-
-        answers_data = []
-        score_data = None
-
-        if call:
-            if status_filter and call.status != status_filter:
-                continue
-
-            answers = session.exec(
-                select(Answer).where(Answer.call_session_id == call.id)
-            ).all()
-            answers_data = [
-                {
-                    "question": a.question,
-                    "extracted_answer": a.extracted_answer,
-                    "confidence": a.confidence,
-                }
-                for a in answers
-            ]
-
-            score = session.exec(
-                select(Score).where(Score.call_session_id == call.id)
-            ).first()
-            if score:
-                score_data = {"score": score.score, "reasoning": score.reasoning}
-
+        # Since we don't store call session locally, we just report whether a call was triggered
         dashboard_data.append(
             {
                 "candidate": {
@@ -291,11 +262,11 @@ def get_dashboard(
                     "consent_status": cand.consent_status,
                     "call_id": cand.call_id,
                 },
-                "call_status": call.status if call else "not_called",
-                "duration": call.duration if call else 0,
-                "recording_url": call.recording_url if call else None,
-                "answers": answers_data,
-                "score": score_data,
+                "call_status": "triggered" if cand.call_id else "not_called",
+                "duration": 0,
+                "recording_url": None,
+                "answers": [],
+                "score": None,
             }
         )
 
